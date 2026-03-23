@@ -1,5 +1,4 @@
 import { networks } from 'bitcoinjs-lib'
-
 import * as utils from './btc'
 
 const fromHex = (hex) => Buffer.from(hex, 'hex')
