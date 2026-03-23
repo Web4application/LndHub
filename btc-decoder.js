@@ -1,6 +1,51 @@
 const bitcoin = require('bitcoinjs-lib');
 const classify = require('bitcoinjs-lib/src/classify');
+const bitcoin = require('bitcoinjs-lib');
+const axios = require('axios');
 
+const MEMPOOL_API = 'https://mempool.space/api';
+
+// 🔍 Get address info
+async function getAddressInfo(address) {
+  const { data } = await axios.get(`${MEMPOOL_API}/address/${address}`);
+  return {
+    address,
+    balance: (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 1e8,
+    totalReceived: data.chain_stats.funded_txo_sum / 1e8,
+    totalSent: data.chain_stats.spent_txo_sum / 1e8,
+    txCount: data.chain_stats.tx_count,
+  };
+}
+
+// 🔍 Get transactions for address
+async function getAddressTxs(address) {
+  const { data } = await axios.get(`${MEMPOOL_API}/address/${address}/txs`);
+  return data;
+}
+
+// 🔍 Decode raw tx (your upgraded decoder)
+function decodeRawHex(rawTx) {
+  const tx = bitcoin.Transaction.fromHex(rawTx);
+
+  return {
+    txid: tx.getId(),
+    size: tx.byteLength(),
+    inputs: tx.ins.map((i) => ({
+      txid: Buffer.from(i.hash).reverse().toString('hex'),
+      vout: i.index,
+    })),
+    outputs: tx.outs.map((o) => ({
+      value: o.value / 1e8,
+      script: bitcoin.script.toASM(o.script),
+    })),
+  };
+}
+
+module.exports = {
+  getAddressInfo,
+  getAddressTxs,
+  decodeRawHex,
+};
 const decodeFormat = (tx) => ({
   txid: tx.getId(),
   version: tx.version,
