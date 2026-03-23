@@ -1,11 +1,14 @@
 import bitcoin from 'bitcoinjs-lib'
 import classify from 'bitcoinjs-lib/src/classify'
 import axios from 'axios'
+import config from './config'
+import jayson from 'jayson/promise'
+import url from 'url'
 
 const BLOCKSTREAM_API = 'https://blockstream.info/api'
 
 // ------------------------
-// Address & Script Utils
+// BTC Utilities
 // ------------------------
 export const isValidBtcAddress = (addr, network) => {
   try {
@@ -16,13 +19,8 @@ export const isValidBtcAddress = (addr, network) => {
   }
 }
 
-export const addressToScript = (addr) => {
-  return bitcoin.address.toOutputScript(addr)
-}
+export const addressToScript = (addr) => bitcoin.address.toOutputScript(addr)
 
-// ------------------------
-// Xpub / Fingerprint
-// ------------------------
 export const compressPublicKey = (pubKey) => bitcoin.ECPair.fromPublicKey(pubKey).publicKey
 
 export const fingerprint = (pubKey) => {
@@ -37,9 +35,6 @@ export const createXpubFromChildAndParent = (path, child, parent) => {
   return bip32.toBase58()
 }
 
-// ------------------------
-// Private Key Parsing
-// ------------------------
 export const detectPrivateKeyFormat = (priv) => {
   if (/^[A-Za-z0-9+/=]{44}$/.test(priv)) return 'base64'
   if (/^[A-Fa-f0-9]{64}$/.test(priv)) return 'hex'
@@ -49,12 +44,9 @@ export const detectPrivateKeyFormat = (priv) => {
 
 export const privateKeyStringToKey = (priv, format) => {
   switch (format) {
-    case 'wif':
-      return bitcoin.ECPair.fromWIF(priv)
-    case 'hex':
-      return bitcoin.ECPair.fromPrivateKey(Buffer.from(priv, 'hex'))
-    case 'base64':
-      return bitcoin.ECPair.fromPrivateKey(Buffer.from(priv, 'base64'))
+    case 'wif': return bitcoin.ECPair.fromWIF(priv)
+    case 'hex': return bitcoin.ECPair.fromPrivateKey(Buffer.from(priv, 'hex'))
+    case 'base64': return bitcoin.ECPair.fromPrivateKey(Buffer.from(priv, 'base64'))
   }
 }
 
@@ -132,14 +124,39 @@ export const getAddressTxs = async (address) => {
 }
 
 // ------------------------
-// Trace Funds with Memoization
+// Bitcoind RPC Setup
 // ------------------------
-export const traceFunds = async (address, depth = 3, visited = new Set()) => {
+let rpcClient = null
+if (config.bitcoind && config.bitcoind.rpc) {
+  const rpcUrl = url.parse(config.bitcoind.rpc)
+  rpcUrl.timeout = 15000
+  rpcClient = jayson.client.http(rpcUrl)
+}
+
+// ------------------------
+// Trace Funds (RPC + API) with Memoization
+// ------------------------
+export const traceFunds = async (address, depth = 3, visited = new Set(), useRpc = true) => {
   if (depth === 0 || visited.has(address)) return []
   visited.add(address)
 
+  let txs = []
+
   try {
-    const txs = await getAddressTxs(address)
+    if (useRpc && rpcClient) {
+      const utxos = await rpcClient.request('listunspent', [0, 9999999, [address]])
+      const txids = utxos.result.map((utxo) => utxo.txid)
+      for (const txid of txids) {
+        const rawTx = await rpcClient.request('getrawtransaction', [txid, true])
+        txs.push(rawTx.result)
+      }
+    }
+
+    if (!rpcClient || !txs.length) {
+      const response = await axios.get(`${BLOCKSTREAM_API}/address/${address}/txs`)
+      txs = response.data
+    }
+
     const results = []
 
     for (const tx of txs) {
@@ -155,24 +172,75 @@ export const traceFunds = async (address, depth = 3, visited = new Set()) => {
           vout: i,
         })
 
-        const childResults = await traceFunds(out.scriptpubkey_address, depth - 1, visited)
+        const childResults = await traceFunds(out.scriptpubkey_address, depth - 1, visited, useRpc)
         results.push(...childResults)
       }
     }
+
     return results
   } catch (err) {
     console.warn(`Trace failed for ${address}: ${err.message}`)
     return []
   }
 }
-// setup bitcoind rpc
-const config = require('./config');
-let jayson = require('jayson/promise');
-let url = require('url');
-if (config.bitcoind) {
-  let rpc = url.parse(config.bitcoind.rpc);
-  rpc.timeout = 15000;
-  module.exports = jayson.client.http(rpc);
-} else {
-  module.exports = {};
+
+// ------------------------
+// Graph Generation
+// ------------------------
+export const generateTraceGraph = (traceData, startAddress) => {
+  let dot = 'digraph BTCTrace {\n  rankdir=LR;\n  node [shape=box, style=filled, color="#f8f8f8"];\n'
+  const addedNodes = new Set()
+  dot += `  "${startAddress}" [fillcolor="#ffe066"];\n`
+  addedNodes.add(startAddress)
+
+  for (const tx of traceData) {
+    const from = tx.fromAddress || startAddress
+    const to = tx.toAddress
+    const label = `${tx.amount} BTC\n${tx.txid.slice(0, 8)}...`
+
+    if (!addedNodes.has(to)) {
+      dot += `  "${to}";\n`
+      addedNodes.add(to)
+    }
+    dot += `  "${from}" -> "${to}" [label="${label}", color="#4caf50"];\n`
+  }
+  dot += '}'
+  return dot
+}
+
+// ------------------------
+// Single Call: Trace + Graph
+// ------------------------
+export const traceAndGraph = async (startAddress, depth = 3, useRpc = true) => {
+  const traceData = await traceFunds(startAddress, depth, new Set(), useRpc)
+  const enriched = traceData.map((t, idx, arr) => ({
+    ...t,
+    fromAddress: idx === 0 ? startAddress : arr[idx - 1].toAddress
+  }))
+  return generateTraceGraph(enriched, startAddress)
+}
+
+// ------------------------
+// Exports
+// ------------------------
+export {
+  bitcoin,
+  classify,
+  axios,
+  rpcClient,
+  isValidBtcAddress,
+  addressToScript,
+  compressPublicKey,
+  fingerprint,
+  getParentPath,
+  createXpubFromChildAndParent,
+  detectPrivateKeyFormat,
+  privateKeyStringToKey,
+  keyPairToAddress,
+  decodeRawHex,
+  getAddressInfo,
+  getAddressTxs,
+  traceFunds,
+  generateTraceGraph,
+  traceAndGraph,
 }
