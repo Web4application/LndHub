@@ -1,0 +1,94 @@
+Gotcha ✅ — you want ModelLib to be shared globally by Web4 (not stored per user), while WebLib is user-specific and contains only that user’s personal data (“Dakota” in your example).
+So the structure becomes:
+/bin/web4.exe          # Web4 core
+/web4lib/              # User-specific data
+    user123/
+        weblib/        # User's personal storage
+/modelstore/           # Global AI models for all users
+
+Key points in your requirement:
+
+ModelLib is global → all users share the same trained models.
+WebLib is per-user → each user has their own isolated data folder.
+The models gather data but store it in the global model store, not in the user’s folder.
+The build system should automatically create the right folders.
+
+
+📄 Updated Web4 Makefile.vc — Global Models + Per-User Data
+Make# =========================
+# Web4 Project Makefile.vc
+# Global ModelLib + Per-User WebLib
+# =========================
+
+# Compiler and linker
+CC = cl
+LINK = link
+
+# Directories
+SRC_AI       = src\ai
+SRC_NET      = src\network
+SRC_UI       = src\ui
+SRC_MEDIA    = src\media
+SRC_CRYPTO   = src\crypto
+SRC_WEBLIB   = src\weblib
+SRC_MODELLIB = src\modellib
+OBJ_DIR      = obj
+BIN_DIR      = bin
+USER_LIB_DIR = web4lib
+MODEL_STORE  = modelstore
+
+# Output
+TARGET_EXE  = $(BIN_DIR)\web4.exe
+TARGET_DLL  = $(BIN_DIR)\web4.dll
+
+# Build mode (default: release)
+!IF "$(MODE)" == "debug"
+CFLAGS      = /nologo /Zi /Od /W3 /EHsc /DWEB4_CORE /DDEBUG
+LFLAGS_EXE  = /nologo /DEBUG
+LFLAGS_DLL  = /nologo /DLL /DEBUG
+!ELSE
+CFLAGS      = /nologo /O2 /W3 /EHsc /DWEB4_CORE /DNDEBUG
+LFLAGS_EXE  = /nologo
+LFLAGS_DLL  = /nologo /DLL
+!ENDIF
+
+# Crypto library paths (adjust if needed)
+CRYPTO_INC  = C:\OpenSSL-Win64\include
+CRYPTO_LIB  = C:\OpenSSL-Win64\lib
+CRYPTO_LINK = libcrypto.lib libssl.lib
+
+# Add include paths
+CFLAGS     += /I$(CRYPTO_INC)
+
+# Auto-discover sources
+AI_SRCS       = $(SRC_AI)\*.c
+NET_SRCS      = $(SRC_NET)\*.c
+UI_SRCS       = $(SRC_UI)\*.c
+MEDIA_SRCS    = $(SRC_MEDIA)\*.c
+CRYPTO_SRCS   = $(SRC_CRYPTO)\*.c
+WEBLIB_SRCS   = $(SRC_WEBLIB)\*.c
+MODELLIB_SRCS = $(SRC_MODELLIB)\*.c
+
+# Object lists
+AI_OBJS       = $(AI_SRCS:$(SRC_AI)\%.c=$(OBJ_DIR)\%.obj)
+NET_OBJS      = $(NET_SRCS:$(SRC_NET)\%.c=$(OBJ_DIR)\%.obj)
+UI_OBJS       = $(UI_SRCS:$(SRC_UI)\%.c=$(OBJ_DIR)\%.obj)
+MEDIA_OBJS    = $(MEDIA_SRCS:$(SRC_MEDIA)\%.c=$(OBJ_DIR)\%.obj)
+CRYPTO_OBJS   = $(CRYPTO_SRCS:$(SRC_CRYPTO)\%.c=$(OBJ_DIR)\%.obj)
+WEBLIB_OBJS   = $(WEBLIB_SRCS:$(SRC_WEBLIB)\%.c=$(OBJ_DIR)\%.obj)
+MODELLIB_OBJS = $(MODELLIB_SRCS:$(SRC_MODELLIB)\%.c=$(OBJ_DIR)\%.obj)
+
+OBJS          = $(AI_OBJS) $(NET_OBJS) $(UI_OBJS) $(MEDIA_OBJS) $(CRYPTO_OBJS) $(WEBLIB_OBJS) $(MODELLIB_OBJS)
+
+# Default target
+all: setup_dirs $(TARGET_EXE)
+
+# Build EXE
+$(TARGET_EXE): $(OBJS)
+	@if not exist $(BIN_DIR) mkdir $(BIN_DIR)
+	$(LINK) $(LFLAGS_EXE) /OUT:$@ $(OBJS) /LIBPATH:$(CRYPTO_LIB) $(CRYPTO_LINK)
+
+# Build DLL
+dll: setup_dirs $(OBJS)
+	@if not exist $(BIN_DIR) mkdir $(BIN_DIR)
+	$(LINK) $(LFLAGS_DLL) /OUT:$(TARGET_DLL) $(OBJS
